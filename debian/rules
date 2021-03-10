@@ -1,0 +1,75 @@
+#!/usr/bin/make -f
+
+DPKG_EXPORT_BUILDFLAGS = 1
+include /usr/share/dpkg/buildflags.mk
+
+export DEB_LDFLAGS_MAINT_APPEND  = -Wl,--as-needed
+export DEB_CXXFLAGS_MAINT_APPEND  = -std=c++14
+
+ifneq (,$(filter $(DEB_HOST_ARCH), armel mipsel m68k powerpc riscv64 sh4))
+  export DEB_LDFLAGS_MAINT_APPEND += -Wl,--no-as-needed -latomic -Wl,--as-needed
+endif
+
+PYTHON3=$(shell py3versions -vr)
+ALLPY=$(PYTHON3) $(PYTHON3:%=%-dbg)
+
+CONFIGURE_ARGS = --with-libiconv --with-boost-libdir=/usr/lib/$(DEB_HOST_MULTIARCH)
+
+%:
+	dh $@ --with python3
+
+override_dh_auto_configure-nopy:
+	dh_auto_configure --builddirectory build -- $(CONFIGURE_ARGS)
+
+override_dh_auto_configure-%:
+	CPPFLAGS="$(CPPFLAGS) $(shell python$*-config --includes)" \
+	PYTHON_LDFLAGS="$(shell python$*-config --libs)" \
+	dh_auto_configure --builddirectory build-py$* -- \
+		PYTHON=/usr/bin/python$* \
+		PYTHON_INSTALL_PARAMS="--root=$(CURDIR)/debian/tmp \
+		--install-layout=deb" \
+		--enable-python-binding \
+		--with-boost-python=boost_python$(subst .,,$(subst -dbg,,$*)) \
+		$(CONFIGURE_ARGS)
+	mv build-py$*/bindings/python build/bindings/python$*
+	cp -r bindings/python/* build/bindings/python$*
+	sed s/-std=c++11//g < build/bindings/python$*/compile_cmd > build/bindings/python$*/compile_cmd.new && \
+		mv -f build/bindings/python$*/compile_cmd.new build/bindings/python$*/compile_cmd
+
+override_dh_auto_configure: override_dh_auto_configure-nopy $(ALLPY:%=override_dh_auto_configure-%)
+
+
+override_dh_auto_build-nopy:
+	dh_auto_build --builddirectory build
+	$(MAKE) -C docs/ -f makefile
+
+override_dh_auto_build-%:
+	dh_auto_build --builddirectory build/bindings/python$*
+
+override_dh_auto_build: override_dh_auto_build-nopy $(ALLPY:%=override_dh_auto_build-%)
+
+
+override_dh_auto_install-nopy:
+	dh_auto_install --builddirectory build
+
+override_dh_auto_install-%:
+	dh_auto_install --builddirectory build/bindings/python$*
+
+override_dh_auto_install: override_dh_auto_install-nopy $(ALLPY:%=override_dh_auto_install-%)
+
+override_dh_auto_clean:
+	rm -rf build build-py*
+	dh_auto_clean --buildsystem=pybuild
+
+override_dh_compress:
+	dh_compress -Xcpp
+
+override_dh_strip:
+	dh_strip --dbg-package=libtorrent-rasterbar-dbg
+
+override_dh_makeshlibs:
+	dh_makeshlibs -V
+
+override_dh_python3:
+	find debian/python3-libtorrent -name '*.cpython-*d*-$(DEB_HOST_MULTIARCH).so' | xargs -r rm -f
+	dh_python3
